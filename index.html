@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>OAuth2 Proxy in less than 100 lines of Go</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/reset.min.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/reveal.min.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/theme/dracula.min.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/monokai.min.css"
+    />
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+        <!-- Title -->
+        <section>
+          <h2>OAuth2 Proxy</h2>
+          <p>In less than 100 lines of Go</p>
+        </section>
+
+        <!-- Background / Context -->
+        <section>
+          <h3>Why does OAuth exists</h3>
+          <ul>
+            <li class="fragment">
+              Early web apps shared credentials with 3rd parties, literally giving away your password.
+            </li>
+            <li class="fragment">
+              The core idea: "Here's a key to drive my car, but it doesn't open the trunk."
+            </li>
+            <li class="fragment">
+              It's about delegated access, granting limited permissions without full control.
+            </li>
+            <li class="fragment">
+              In OAuth terms, an app can "drive" (act on behalf of a user) within a defined scope.
+              Like reading emails or posting tweets but it can't access everything else the user owns.
+            </li>
+            <li class="fragment">
+              You don't share your password: Instead you share a token representing a specific, temporary permission.
+            </li>
+        </ul>
+        </section>
+
+        <!-- History -->
+        <section>
+          <h3>OAuth History</h3>
+          <ul>
+            <li class="fragment">
+              In 2006, <strong>Blaine Cook (Twitter)</strong> proposed a safer model:
+              delegated access.
+            </li>
+            <li class="fragment">
+              This concept gained traction, leading to collaboration among major players
+              like Google, Yahoo, and Microsoft. This led to the creation of <strong>OAuth 1.0</strong> (IETF RFC 5849) in 2007.
+            </li>
+            <li class="fragment">
+              That evolved into <strong>OAuth 2.0</strong> (IETF RFC 6749), now the
+              foundation of every modern login flow.
+            </li>
+          </ul>
+        </section>
+
+
+        <!-- Problem -->
+        <section>
+          <h3>The Maintenance Problem</h3>
+          <ul>
+            <li class="fragment">You deploy tens of small, independent apps.</li>
+            <li class="fragment">Each one needs authentication and authorization.</li>
+            <li class="fragment">You could embed login flows, sessions, token validation...</li>
+            <li class="fragment">
+              ...but that either means <strong>duplicated logic</strong>, inconsistent
+              configs, token leaks or you need to build a <strong>shared library</strong>
+              that every app must import. Accross different languages/frameworks. Yuck.
+            </li>
+            <li class="fragment">
+              <strong>So what if we extracted auth into a single sidecar/proxy?</strong>
+            </li>
+          </ul>
+        </section>
+
+        <!-- OIDC vs OAuth2 -->
+        <section>
+          <h3>Terminology Check</h3>
+          <div style="display: flex; justify-content: space-around;">
+            <div>
+              <h4>OAuth 2.0</h4>
+              <p style="font-size: 0.8em; color: #ff79c6;">Authorization</p>
+              <p style="font-size: 0.6em;">“Access: What are you allowed to do?”</p>
+            </div>
+            <div>
+              <h4>OIDC</h4>
+              <p style="font-size: 0.8em; color: #8be9fd;">Authentication</p>
+              <p style="font-size: 0.6em;">“Identity: Who are you?”</p>
+            </div>
+          </div>
+          <p class="fragment" style="margin-top: 20px; font-size: 0.7em;">
+            OpenID Connect: OAuth 2.0 + an identity layer.
+          </p>
+        </section>
+
+        <!-- Pattern -->
+        <section>
+          <h3>The Proxy Pattern</h3>
+          <pre class="mermaid" style="display: flex; justify-content: center;">
+graph LR
+    User -->|Request| Proxy
+    Proxy -->|Auth Check| IDP[Keycloak/Auth0]
+    Proxy -->|Allowed| App
+          </pre>
+          <p style="font-size: 0.6em;">Your app trusts the proxy. The proxy trusts the IDP.</p>
+        </section>
+
+        <!-- Config -->
+        <section>
+          <h3>1. Configuration</h3>
+          <p style="font-size: 0.6em;">Standard library + <code>x/oauth2</code></p>
+          <pre><code class="go" data-trim data-line-numbers="1-12">
+var config *oauth2.Config
+
+func init() {
+    config = &oauth2.Config{
+        ClientID:     "oauth2-proxy",
+        ClientSecret: "7234...", // Secret from IDP
+        RedirectURL:  "http://localhost:8080/callback",
+        Scopes:       []string{"openid", "profile", "email"},
+        Endpoint: oauth2.Endpoint{
+            AuthURL:  "http://keycloak.../auth",
+            TokenURL: "http://keycloak.../token",
+        },
+    }
+}
+          </code></pre>
+        </section>
+
+        <!-- Routing -->
+        <section>
+          <h3>2. Routing</h3>
+          <pre><code class="go" data-trim>
+func main() {
+    // 1. Start Login
+    http.HandleFunc("/login", handleLogin)
+
+    // 2. IDP redirects back here
+    http.HandleFunc("/callback", handleCallback)
+
+    // 3. The actual app
+    http.HandleFunc("/", handleProtected)
+
+    log.Println("Proxy on :8080")
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+          </code></pre>
+        </section>
+
+        <!-- Login -->
+        <section>
+          <h3>3. The Handshake (Login)</h3>
+          <p style="font-size: 0.6em;">Redirect user to the IDP.</p>
+          <pre><code class="go" data-trim>
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+    // Generate URL to IDP
+    // "state" should be random in prod (CSRF protection)
+    authURL := config.AuthCodeURL("state")
+
+    http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
+}
+          </code></pre>
+        </section>
+
+        <!-- Callback -->
+        <section>
+          <h3>4. The Exchange (Callback)</h3>
+          <p style="font-size: 0.6em;">Trade a one-time code for an access token.</p>
+          <pre><code class="go" data-trim data-line-numbers="|2-6|8-12|15-20">
+func handleCallback(w http.ResponseWriter, r *http.Request) {
+    code := r.URL.Query().Get("code")
+    if code == "" {
+        http.Error(w, "no code", http.StatusBadRequest)
+        return
+    }
+
+    token, err := config.Exchange(context.Background(), code)
+    if err != nil {
+        http.Error(w, fmt.Sprintf("exchange: %v", err), 500)
+        return
+    }
+
+    http.SetCookie(w, &http.Cookie{
+        Name:     "token",
+        Value:    token.AccessToken,
+        HttpOnly: true,
+        Path:     "/",
+    })
+
+    http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+          </code></pre>
+        </section>
+
+        <!-- Proxy -->
+        <section>
+          <h3>5. The Proxy</h3>
+          <p style="font-size: 0.6em;">Validate, inject token, and forward downstream.</p>
+          <pre><code class="go" data-trim data-line-numbers="|2-6|9-10|11-13">
+func handleProtected(w http.ResponseWriter, r *http.Request) {
+    cookie, err := r.Cookie("token")
+    if err != nil || cookie.Value == "" {
+        http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+        return
+    }
+
+    r.Header.Set("Authorization", "Bearer "+cookie.Value)
+
+    proxy := httputil.NewSingleHostReverseProxy(
+        &url.URL{Scheme: "http", Host: "localhost:8081"},
+    )
+    proxy.ServeHTTP(w, r)
+}
+          </code></pre>
+        </section>
+
+        <section>
+          <h1>Demo</h1>
+          <p><i>Let’s see it in action.</i></p>
+        </section>
+
+        <!-- Summary -->
+        <section>
+          <h3>Summary</h3>
+          <ul>
+            <li><strong>Delegate:</strong> Offload auth to the proxy.</li>
+            <li><strong>Centralize:</strong> One policy, many services.</li>
+            <li><strong>Standardize:</strong> OIDC, not homegrown auth.</li>
+            <li><strong>Simplify:</strong> Core logic ≈ 60 lines of Go.</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/reveal.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/plugin/highlight/highlight.min.js"></script>
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+      Reveal.initialize({
+        hash: true,
+        plugins: [RevealHighlight],
+      });
+    </script>
+  </body>
+</html>
