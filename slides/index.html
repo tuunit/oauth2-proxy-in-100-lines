@@ -23,6 +23,11 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/monokai.min.css"
     />
+    <style>
+      :root {
+        --r-main-font-size: 20px; /* Or 1.2em, etc. */
+      }
+    </style>
   </head>
   <body>
     <div class="reveal">
@@ -130,7 +135,7 @@ graph LR
         <section>
           <h3>1. Configuration</h3>
           <p style="font-size: 0.6em;">Standard library + <code>x/oauth2</code></p>
-          <pre><code class="go" data-trim data-line-numbers="1-12">
+          <pre><code class="go" data-trim>
 var config *oauth2.Config
 
 func init() {
@@ -187,7 +192,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
         <section>
           <h3>4. The Exchange (Callback)</h3>
           <p style="font-size: 0.6em;">Trade a one-time code for an access token.</p>
-          <pre><code class="go" data-trim data-line-numbers="|2-6|8-12|15-20">
+          <pre><code class="go" data-trim data-line-numbers="|2-6|8-12|14-20">
 func handleCallback(w http.ResponseWriter, r *http.Request) {
     code := r.URL.Query().Get("code")
     if code == "" {
@@ -217,7 +222,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
         <section>
           <h3>5. The Proxy</h3>
           <p style="font-size: 0.6em;">Validate, inject token, and forward downstream.</p>
-          <pre><code class="go" data-trim data-line-numbers="|2-6|9-10|11-13">
+          <pre><code class="go" data-trim data-line-numbers="|2-6|8|10-13">
 func handleProtected(w http.ResponseWriter, r *http.Request) {
     cookie, err := r.Cookie("token")
     if err != nil || cookie.Value == "" {
@@ -247,8 +252,51 @@ func handleProtected(w http.ResponseWriter, r *http.Request) {
             <li><strong>Delegate:</strong> Offload auth to the proxy.</li>
             <li><strong>Centralize:</strong> One policy, many services.</li>
             <li><strong>Standardize:</strong> OIDC, not homegrown auth.</li>
-            <li><strong>Simplify:</strong> Core logic ≈ 60 lines of Go.</li>
+            <li><strong>Simplify:</strong> Core logic ≈ 80 lines of Go.</li>
           </ul>
+        </section>
+
+        <!-- Bonus -->
+        <section>
+          <section>
+            <h3>Bonus: Token "Validation"</h3>
+            <p style="font-size: 0.6em;">
+              Call the IDP's userinfo endpoint to verify the token is valid.
+            </p>
+            <pre><code class="go" data-trim data-line-numbers="|2-9|11-14">
+func validateToken(token string) error {
+	req, _ := http.NewRequest("GET", userinfoURL, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.ReadAll(resp.Body)
+		return fmt.Errorf("userinfo returned %d", resp.StatusCode)
+	}
+
+	return nil
+}
+            </code></pre>
+          </section>
+          <section>
+            <h3>Bonus: Token "Refresh"</h3>
+            <pre><code class="go" data-trim>
+func handleProtected(w http.ResponseWriter, r *http.Request) {
+  ...
+	// NEW: Validate token before proxying
+	if err := validateToken(cookie.Value); err != nil {
+		http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+		return
+	}
+  ...
+}
+            </code></pre>
+          </section>
         </section>
       </div>
     </div>
